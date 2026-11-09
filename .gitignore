@@ -1,0 +1,15 @@
+# modeller ve buyuk dosyalar (repoya girmez; makinede durur)
+*.pt
+*_openvino_model/
+*.onnx
+*.mp4
+*.avi
+kayitlar/
+silikon_kareler/
+tanitim/
+snapshot_*.png
+# yedekler / gecici
+*.bak
+*.patch
+__pycache__/
+*.pyc

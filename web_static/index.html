@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI-LINER — Canlı Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ── üst şerit ─────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <div class="brand-text">
+        <span class="brand-name" id="urunAdi">AI-LINER</span>
+        <span class="brand-sub" id="urunAlt">Görüntü İşleme · Kalite · İSG Teknolojisi</span>
+      </div>
+    </div>
+
+    <div class="cycle-readout">
+      <span class="cycle-big" id="cycleTime">—</span>
+      <span class="cycle-sub" id="cycleSub">motor bekleniyor</span>
+    </div>
+
+    <div class="top-right">
+      <div class="stat-chip">
+        <span class="stat-label">FPS</span>
+        <span class="stat-value mono" id="fpsVal">0.0</span>
+      </div>
+      <div class="stat-chip">
+        <span class="stat-label">Kişi</span>
+        <span class="stat-value mono" id="personVal">0</span>
+      </div>
+      <button class="conn-dot" id="connDot" title="Bağlantı durumu"></button>
+    </div>
+  </header>
+
+  <!-- ── ana grid ──────────────────────────────────────────────── -->
+  <main class="grid">
+
+    <!-- SOL: kaynak + motor + kkd + ayarlar -->
+    <aside class="col col-left">
+
+      <section class="panel">
+        <h2 class="panel-title">Kaynak</h2>
+        <div class="source-status" id="sourceLabel">(kaynak seçilmedi)</div>
+        <div class="btnrow" id="webcamBtns"></div>
+        <div class="btnrow col-stack" id="videoBtns"></div>
+        <div class="ip-row">
+          <input type="text" id="ipUrl" class="text-input mono" placeholder="rtsp://..." />
+          <button class="btn btn-accent" id="ipConnectBtn">Bağlan</button>
+        </div>
+        <div class="ip-status mono" id="ipStatus"></div>
+        <div class="btnrow">
+          <button class="btn btn-ghost" id="stopBtn">Durdur</button>
+          <button class="btn btn-ghost" id="resetBtn">QA Sıfırla</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title">Motor Çevrimi</h2>
+        <div class="motor-row">
+          <span class="state-dot" id="motorDot"></span>
+          <span class="motor-state mono" id="motorState">-</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="motorBar"></div></div>
+        <div class="bar-caption mono" id="motorCaption">kayma 0.000 / 0.10</div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title">Kep &amp; Müşür</h2>
+        <div class="ppe-row kep-row">
+          <div class="ppe-label">Support</div>
+          <div class="bar-track"><div class="bar-fill" id="kepBar"></div></div>
+          <div class="ppe-pct mono" id="kepPct">0/6</div>
+        </div>
+        <div class="ppe-row kep-row">
+          <div class="ppe-label">Kalan</div>
+          <div class="bar-track"><div class="bar-fill" id="kepMotorBar"></div></div>
+          <div class="ppe-pct mono" id="kepMotorPct">0</div>
+        </div>
+        <div class="ppe-row kep-row">
+          <div class="ppe-label">Müşür</div>
+          <div class="bar-track"><div class="bar-fill" id="musurBar"></div></div>
+          <div class="ppe-pct mono" id="musurPct">—</div>
+        </div>
+        <div class="bar-caption mono" id="kepCaption">kep sökme bekleniyor</div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title">Ayarlar</h2>
+        <div class="settings-list" id="settingsList"></div>
+      </section>
+
+    </aside>
+
+    <!-- ORTA: canlı görüntü -->
+    <section class="col col-center">
+      <div class="video-wrap">
+        <img id="videoFeed" class="video-feed" src="/video_feed" alt="canlı görüntü" />
+        <div class="video-overlay-top">
+          <span class="chip mono" id="detChip">qa 0 · motor 0 · kep 0/6</span>
+        </div>
+        <div class="video-overlay-bottom" id="resultBanner">
+          <span class="result-text" id="resultText">BEKLİYOR</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- SAĞ: QA kontrol listesi + bölgeler + sonuç halkası -->
+    <aside class="col col-right">
+
+      <section class="panel ring-panel">
+        <div class="ring-wrap">
+          <svg viewBox="0 0 140 140" class="ring-svg">
+            <circle cx="70" cy="70" r="60" class="ring-bg" />
+            <circle cx="70" cy="70" r="60" class="ring-fg" id="ringFg" />
+          </svg>
+          <div class="ring-center">
+            <span class="ring-frac mono" id="ringFrac">0/0</span>
+            <span class="ring-state" id="ringState">BEKLİYOR</span>
+          </div>
+        </div>
+        <div class="ring-note" id="ringNote">motor bekleniyor</div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title">QA Kontrol Listesi</h2>
+        <div class="qa-list" id="qaList"></div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title">Bölgeler (ROI)</h2>
+        <div class="zone-list" id="zoneList"></div>
+      </section>
+
+    </aside>
+
+  </main>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
