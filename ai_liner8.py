@@ -250,7 +250,7 @@ PER_CLASS_CONF = {
     "kep_sokme": 0.35,
     "pim cakma": 0.40,       # dusuk recall — daha kolay yakalansin
     "kam_mili koyma": 0.25,   # v8: canli kamerada kesik tespit icin 0.30 -> 0.25
-    "musur_skma": 0.45,
+    "musur_skma": 0.35,      # v8: canlida kaciyordu 0.45 -> 0.35 (kayitta medyan 0.87)
     "silikon_silme": 0.30,   # v8: kisa/aralikli goruluyor; erken yanlislari sira sarti engeller
     MOTOR_CLASS: MOTOR_CONF,
     KEP_SINIF: KEP_CONF,
@@ -305,7 +305,9 @@ STEP_REQUIRES_ANY = {
 }
 
 STEP_REQUIRES = {
-    "musur_skma":["kep_sokme"],
+    # v8: musur_skma kep_sokme'ye BAGLI DEGIL — kep sayaci 6/6'ya ulasamazsa
+    # musur sikma da eksik gorunuyordu (zincirleme hata). Musur blokta,
+    # keplerden bagimsiz; yanlis tespiti konum kontrolu (motor alt govdesi) eler.
     "pim cakma":["kep_sokme"],
 
 }
@@ -4955,30 +4957,35 @@ class App:
 
             def _musur_sikma_yerinde():
                 """musur_skma kutusu: musur noktasini (harita ya da gercek konum)
-                iceriyor VEYA motor govdesinin alt kismiyla yeterince ortusuyor."""
-                if mbox is None:
-                    return False
-                mx1, my1, mx2, my2 = mbox
-                noktalar = [(mx1 + MUSUR_KONUM[0] * (mx2 - mx1), my1 + MUSUR_KONUM[1] * (my2 - my1))]
-                if musur_poz is not None:
-                    noktalar.append(musur_poz)
-                ly1 = my1 + MUSUR_ALT_RY[0] * (my2 - my1)
+                iceriyor VEYA motor govdesinin alt kismiyla yeterince ortusuyor.
+                v8: referans kutusu VE o anki motor kutusu ayri ayri denenir
+                (motor palette dondurulunce referans eskiyebiliyor)."""
+                kutular_ = [b_ for b_ in (kep_tracker.motor_box, motor_box) if b_ is not None]
                 p_ = MUSUR_SKMA_PAD
-                for ad, _, _, k in musur_kutular:
-                    if ad != "musur_skma":
-                        continue
-                    if any(k[0] - p_ <= px <= k[2] + p_ and k[1] - p_ <= py <= k[3] + p_ for px, py in noktalar):
-                        return True
-                    ix = max(0.0, min(k[2], mx2) - max(k[0], mx1))
-                    iy = max(0.0, min(k[3], my2) - max(k[1], ly1))
-                    alan = max(1e-9, (k[2] - k[0]) * (k[3] - k[1]))
-                    if ix * iy / alan >= MUSUR_SKMA_MIN_ORT:
-                        return True
+                for mx1, my1, mx2, my2 in kutular_:
+                    noktalar = [(mx1 + MUSUR_KONUM[0] * (mx2 - mx1), my1 + MUSUR_KONUM[1] * (my2 - my1))]
+                    if musur_poz is not None:
+                        noktalar.append(musur_poz)
+                    ly1 = my1 + MUSUR_ALT_RY[0] * (my2 - my1)
+                    for ad, _, _, k in musur_kutular:
+                        if ad != "musur_skma":
+                            continue
+                        if any(k[0] - p_ <= px <= k[2] + p_ and k[1] - p_ <= py <= k[3] + p_ for px, py in noktalar):
+                            return True
+                        ix = max(0.0, min(k[2], mx2) - max(k[0], mx1))
+                        iy = max(0.0, min(k[3], my2) - max(k[1], ly1))
+                        alan = max(1e-9, (k[2] - k[0]) * (k[3] - k[1]))
+                        if ix * iy / alan >= MUSUR_SKMA_MIN_ORT:
+                            return True
                 return False
             # musur_skma ISLEMI musur bolgesinde degilse sayilmaz
+            skma_neden = None
             if MUSUR_KONUM_KONTROL and mbox is not None and "musur_skma" in steps_seen:
                 if not _musur_sikma_yerinde():
                     steps_seen = [s for s in steps_seen if s != "musur_skma"]
+                    k = next(k for ad, _, _, k in musur_kutular if ad == "musur_skma")
+                    skma_neden = (f"konum disi (kutu x {k[0]:.2f}-{k[2]:.2f} y {k[1]:.2f}-{k[3]:.2f}; "
+                                  f"motor x {mbox[0]:.2f}-{mbox[2]:.2f} y {mbox[1]:.2f}-{mbox[3]:.2f})")
 
             # ── SILIKON (istege bagli spatula modeli) ─────────────────
             # Yalnizca silikon beklenirken calisir; spatula motor kutusuna
@@ -5038,6 +5045,20 @@ class App:
                     b = _blocked(name)
                     if b:
                         qa_wait[name] = b
+
+            # tani: musur sikma goruluyor ama sayilmiyorsa nedeni 3 sn'de bir yaz
+            if not qa.done.get("musur_skma", False):
+                if skma_neden is None and "musur_skma" in steps_seen and "musur_skma" in qa_wait:
+                    if "musur_skma" in ertelenen:
+                        skma_neden = None   # bekletiliyor, kep bitince sayilacak
+                    elif not motor_mon.armed:
+                        skma_neden = f"{qa_wait['musur_skma']} + motor POSTADA degil (durum={motor_mon.state})"
+                    else:
+                        skma_neden = f"{qa_wait['musur_skma']} (ertelendi, kep bitince sayilacak)"
+                if skma_neden and now - getattr(self, "_skma_tani_t", 0.0) > 3.0:
+                    print(f"[MUSUR SIKMA] tespit var ama sayilmadi: {skma_neden} | "
+                          f"kep {kep_tracker.support_n}/{kep_tracker.n}")
+                    self._skma_tani_t = now
 
             # ertelenmis adimlar: sarti simdi saglandiysa say
             for name in list(ertelenen):
