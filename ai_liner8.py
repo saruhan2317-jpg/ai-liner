@@ -166,6 +166,16 @@ KAM_MILI_OTOMATIK   = False
 if KAM_MILI_OTOMATIK:
     QA_STEP_CLASSES = [s for s in QA_STEP_CLASSES if s != "kam_mili koyma"]
 
+# 'kam_mili' NESNESI motorun alt kisminda gorulurse 'kam mili koyma' de
+# goruldu sayilir (islem etiketi kacsa bile). Masada/rafta duran kam mili
+# sayilmaz: nesne motor kutusunun alt yarisinda, yanlardan KAM_X_PAY icinde
+# olmali. Onay suresi ve kopukluk toleransi 'kam_mili koyma' ile ayni.
+KAM_NESNE           = "kam_mili"
+KAM_NESNE_SAY       = True
+KAM_NESNE_CONF      = 0.40
+KAM_X_PAY           = 0.15     # motor kutusunun solu/sagi (normalize)
+KAM_MIN_RY          = 0.50     # motor kutusunun en az bu yuksekliginden asagida
+
 
 def support_rect(motor_box):
     """Motor kutusundan (x1,y1,x2,y2 normalize) support bolgesini hesaplar."""
@@ -255,6 +265,7 @@ PER_CLASS_CONF = {
     MOTOR_CLASS: MOTOR_CONF,
     KEP_SINIF: KEP_CONF,
     MUSUR_NESNE: MUSUR_NESNE_CONF,
+    KAM_NESNE: KAM_NESNE_CONF,
 }
 
 # Adim onay suresi (dwell): sinif bu kadar sn (kisa kesintiler tolere edilerek)
@@ -4674,6 +4685,8 @@ class App:
         kep_boxes_norm = []   # [(cx, cy)] normalize — kep_sokme tespitleri
         musur_boxes = []      # [(ad, cx, cy)] normalize — musur sikma/takma tespitleri
         self._musur_boxes = musur_boxes
+        kam_boxes = []        # [(cx, cy)] normalize — 'kam_mili' nesnesi
+        self._kam_boxes = kam_boxes
 
         # QA modeli: islem siniflari + motor (her birine ayri confidence)
         if self.model_qa is not None:
@@ -4702,6 +4715,8 @@ class App:
                         # KEP kutu merkezini normalize koordinat olarak sakla
                         kep_boxes_norm.append(((x1b + x2b) / 2.0 / fw,
                                                (y1b + y2b) / 2.0 / fh))
+                    elif name == KAM_NESNE:
+                        kam_boxes.append(((x1b + x2b) / 2.0 / fw, (y1b + y2b) / 2.0 / fh))
                     elif name in MUSUR_KONUM_SINIFLAR:
                         musur_boxes.append((name, (x1b + x2b) / 2.0 / fw,
                                             (y1b + y2b) / 2.0 / fh,
@@ -4986,6 +5001,18 @@ class App:
                     k = next(k for ad, _, _, k in musur_kutular if ad == "musur_skma")
                     skma_neden = (f"konum disi (kutu x {k[0]:.2f}-{k[2]:.2f} y {k[1]:.2f}-{k[3]:.2f}; "
                                   f"motor x {mbox[0]:.2f}-{mbox[2]:.2f} y {mbox[1]:.2f}-{mbox[3]:.2f})")
+
+            # ── KAM MILI NESNESI -> 'kam mili koyma' ──────────────────
+            if (KAM_NESNE_SAY and sayim_acik and "kam_mili koyma" in QA_STEP_CLASSES
+                    and not qa.done.get("kam_mili koyma", False)
+                    and "kam_mili koyma" not in steps_seen):
+                kutular_ = [b_ for b_ in (kep_tracker.motor_box, motor_box) if b_ is not None]
+                for kcx, kcy in getattr(self, "_kam_boxes", []):
+                    if any(bx1 - KAM_X_PAY <= kcx <= bx2 + KAM_X_PAY
+                           and kcy >= by1 + KAM_MIN_RY * (by2 - by1)
+                           for bx1, by1, bx2, by2 in kutular_):
+                        steps_seen.append("kam_mili koyma")
+                        break
 
             # ── SILIKON (istege bagli spatula modeli) ─────────────────
             # Yalnizca silikon beklenirken calisir; spatula motor kutusuna
