@@ -996,6 +996,66 @@ def yuz_mozaik(img, bolgeler, kabalik=None):
     return img
 
 
+class IpOkuyucu:
+    """IP kamerayi AYRI bir is parcaciginda surekli okur, yalnizca SON kareyi tutar.
+    Cikarim yavasladiginda akis zamaninda okunmazsa kamera paket atar ve
+    goruntu gri/bulanik parcalara doner; surekli okuma bunu onler.
+    cv2.VideoCapture yerine kullanilir (read/get/set/isOpened/release)."""
+    def __init__(self, cap, bekle=2.0):
+        self.cap, self.bekle = cap, bekle
+        self.kilit = threading.Lock()
+        self.kare, self.no, self.son_no, self.saglam = None, 0, -1, True
+        self.dur = False
+        self.atlanan = 0                      # cikarimin okumadigi kare sayisi (bilgi)
+        self.t = threading.Thread(target=self._dongu, daemon=True, name="ip-okuyucu")
+        self.t.start()
+
+    def _dongu(self):
+        while not self.dur:
+            ok, f = self.cap.read()
+            if not ok:
+                self.saglam = False
+                time.sleep(0.05)
+                continue
+            with self.kilit:
+                if self.no != self.son_no and self.kare is not None:
+                    self.atlanan += 1
+                self.kare, self.saglam = f, True
+                self.no += 1
+
+    def read(self):
+        t0 = time.time()
+        while time.time() - t0 < self.bekle:
+            with self.kilit:
+                if self.kare is not None and self.no != self.son_no:
+                    self.son_no = self.no
+                    return True, self.kare
+            if not self.saglam and time.time() - t0 > 0.5:
+                break
+            time.sleep(0.003)
+        return False, None
+
+    def grab(self):
+        return True
+
+    def isOpened(self):
+        return self.cap.isOpened()
+
+    def get(self, p):
+        return self.cap.get(p)
+
+    def set(self, p, v):
+        return self.cap.set(p, v)
+
+    def release(self):
+        self.dur = True
+        try:
+            self.t.join(timeout=2.0)
+        except Exception:
+            pass
+        self.cap.release()
+
+
 def kisi_kutulari(boxes, w, h, pay=None):
     """Poz modelinin kisi kutularini (pay ile genisletilmis) piksel olarak dondurur."""
     pay = KISI_PAY if pay is None else pay
@@ -4771,6 +4831,8 @@ class App:
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 15000)
             cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 15000)
+            if cap.isOpened():
+                cap = IpOkuyucu(cap)          # surekli okuma: paket kaybi / gri kare olmaz
         else:
             cap = cv2.VideoCapture(target, cv2.CAP_FFMPEG)
             if not cap.isOpened(): cap = cv2.VideoCapture(target, cv2.CAP_MSMF)
