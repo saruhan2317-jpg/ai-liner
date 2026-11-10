@@ -392,6 +392,24 @@ YUZ_MIN_R      = 18       # en kucuk yaricap (piksel)
 KISI_BULANIK   = True
 KISI_PAY       = 0.06     # kisi kutusu her yandan bu oranda genisletilir
 KISI_KABALIK   = 1.6      # kabalik carpani (kisi bolgesi yuze gore buyuk)
+# Yalnizca INSAN VUCUDU: kisi segmentasyon modeli (yolov8n-seg.pt) klasordeyse
+# kutu yerine vucudun silueti bulaniklastirilir; kollarin arasindaki motor net
+# kalir. Model yoksa ya da kisiyi bulamazsa (poz modeli bulduysa) kutu bulanigi.
+SEG_MODEL_PATH = os.path.join(BASE_DIR, "yolov8n-seg.pt")
+KISI_SEG_CONF  = 0.25
+KISI_SEG_IMGSZ = 640
+KISI_GENISLET  = 0.012    # siluet her yandan kare genisliginin bu orani kadar buyutulur
+# Yanlis siluet (or. motorun 'insan' sanilmasi) elemesi: siluet, poz modelinin
+# buldugu bir kisinin kutusuyla en az KISI_ESLES orani kadar ortusmeli ve o
+# kutunun (KISI_KIRP payiyla) disina tasamaz. Poz kimseyi bulmadiysa yalnizca
+# KISI_SEG_TEK_CONF ustundeki siluetler kullanilir.
+KISI_ESLES     = 0.30
+KISI_KIRP      = 0.15
+KISI_SEG_TEK_CONF = 0.50
+# Iskelet koridoru: segmentasyon motoru 'bacak' sanip siluete katabiliyor.
+# Siluetin yalnizca iskeletten cizilen vucut koridoru icindeki kismi kullanilir.
+KISI_KOL_KALINLIK = 0.55  # kol/bacak koridoru kalinligi = omuz genisligi x bu
+KISI_EL_UZAT      = 0.60  # el, bilekten onkol boyunun bu orani kadar ileri uzatilir
 
 POSE_SKELETON = [
     (0,1),(0,2),(1,3),(2,4),(0,5),(0,6),(5,7),(7,9),(6,8),(8,10),
@@ -1020,6 +1038,83 @@ def kisi_bulanik(img, kutular, kabalik=None):
         cv2.rectangle(maske, (kx1 - x1, ky1 - y1), (kx2 - x1, ky2 - y1), 255, -1)   # ic tam
         m3 = (maske.astype(np.float32) / 255.0)[..., None]
         img[y1:y2, x1:x2] = (bulanik * m3 + roi * (1 - m3)).astype(np.uint8)
+    return img
+
+
+def kisi_koridor(keypoints, w, h, kpt_thres=0.15):
+    """Iskelet noktalarindan comert bir vucut koridoru maskesi (0/255) cizer.
+    Hicbir kisi icin yeterli nokta yoksa None dondurur."""
+    if keypoints is None:
+        return None
+    try:
+        xy = keypoints.xy.cpu().numpy(); cf = keypoints.conf.cpu().numpy()
+    except Exception:
+        return None
+    m = np.zeros((h, w), np.uint8)
+    ciz = False
+    for P, C in zip(xy, cf):
+        ok = lambda i: i < len(P) and C[i] > kpt_thres and P[i][0] > 0 and P[i][1] > 0
+        pt = lambda i: (int(P[i][0]), int(P[i][1]))
+        if ok(5) and ok(6):
+            d = math.hypot(P[5][0] - P[6][0], P[5][1] - P[6][1])
+        else:
+            vis = [P[i] for i in range(len(P)) if ok(i)]
+            if len(vis) < 2:
+                continue
+            d = 0.5 * max(math.hypot(a[0] - b[0], a[1] - b[1]) for a in vis for b in vis)
+        d = max(d, 20.0)
+        t = max(10, int(d * KISI_KOL_KALINLIK))
+        # govde: omuzlar + kalcalar (kalca yoksa omuzdan asagi uzat)
+        if ok(5) and ok(6):
+            alt = [pt(12) if ok(12) else (pt(6)[0], int(pt(6)[1] + 1.3 * d)),
+                   pt(11) if ok(11) else (pt(5)[0], int(pt(5)[1] + 1.3 * d))]
+            cv2.fillPoly(m, [np.array([pt(5), pt(6), alt[0], alt[1]], np.int32)], 255)
+            cv2.polylines(m, [np.array([pt(5), pt(6), alt[0], alt[1]], np.int32)], True, 255, t)
+            ciz = True
+        for a, b in ((5, 7), (7, 9), (6, 8), (8, 10), (11, 13), (13, 15), (12, 14), (14, 16), (5, 6)):
+            if ok(a) and ok(b):
+                cv2.line(m, pt(a), pt(b), 255, t); ciz = True
+        for dir_, bil in ((7, 9), (8, 10)):          # eller: bilekten ileri
+            if ok(bil):
+                bx, by = P[bil][0], P[bil][1]
+                if ok(dir_):
+                    ex, ey = bx + (bx - P[dir_][0]) * KISI_EL_UZAT, by + (by - P[dir_][1]) * KISI_EL_UZAT
+                    cv2.line(m, pt(bil), (int(ex), int(ey)), 255, t)
+                    cv2.circle(m, (int(ex), int(ey)), int(t * 0.8), 255, -1)
+                cv2.circle(m, pt(bil), int(t * 0.9), 255, -1); ciz = True
+        bas = [i for i in range(5) if ok(i)]          # bas
+        if bas:
+            cx = int(np.mean([P[i][0] for i in bas])); cy = int(np.mean([P[i][1] for i in bas]))
+            cv2.ellipse(m, (cx, cy), (int(0.55 * d), int(0.7 * d)), 0, 0, 360, 255, -1)
+            if ok(5) and ok(6):
+                cv2.line(m, (cx, cy), ((pt(5)[0] + pt(6)[0]) // 2, (pt(5)[1] + pt(6)[1]) // 2), 255, t)
+            ciz = True
+    return m if ciz else None
+
+
+def kisi_siluet_bulanik(img, maske, kabalik=None):
+    """Kisi siluetini (0/255 maske) genisletip bulaniklastirir; disi net kalir."""
+    if img is None or maske is None:
+        return img
+    h, w = img.shape[:2]
+    gen = max(3, int(w * KISI_GENISLET))
+    m = cv2.dilate(maske, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * gen + 1, 2 * gen + 1)))
+    ys, xs = np.where(m > 0)
+    if len(xs) == 0:
+        return img
+    x1, x2 = max(0, xs.min() - gen), min(w, xs.max() + gen + 1)
+    y1, y2 = max(0, ys.min() - gen), min(h, ys.max() + gen + 1)
+    bw, bh = x2 - x1, y2 - y1
+    if bw < 4 or bh < 4:
+        return img
+    blok = max(6, int((kabalik or YUZ_MOZAIK) * KISI_KABALIK))
+    roi = img[y1:y2, x1:x2]
+    kucuk = cv2.resize(roi, (max(1, bw // blok), max(1, bh // blok)), interpolation=cv2.INTER_AREA)
+    bulanik = cv2.resize(kucuk, (bw, bh), interpolation=cv2.INTER_LINEAR)
+    mr = m[y1:y2, x1:x2]
+    yumusak = np.maximum(cv2.GaussianBlur(mr, (0, 0), gen / 2.0), mr)   # ic tam, kenar yumusak
+    m3 = (yumusak.astype(np.float32) / 255.0)[..., None]
+    img[y1:y2, x1:x2] = (bulanik * m3 + roi * (1 - m3)).astype(np.uint8)
     return img
 
 
@@ -3760,6 +3855,10 @@ class App:
         self.model_qa,     self.ov_qa     = self._load_yolo(QA_MODEL_PATH, "detect", required=True)
         self.model_pose,   self.ov_pose   = self._load_pose()
         self.model_sil,    self.ov_sil    = self._load_yolo(SILIKON_MODEL_PATH, "detect", required=False)
+        self.model_seg,    self.ov_seg    = (self._load_yolo(SEG_MODEL_PATH, "segment", required=False)
+                                             if KISI_BULANIK else (None, False))
+        print(f"[KVKK] maske: {'vucut silueti (segmentasyon)' if self.model_seg is not None else 'kisi kutusu'}"
+              if KISI_BULANIK else "[KVKK] maske: yalnizca yuz")
         if self.model_sil is not None:
             print(f"[silikon] spatula modeli yuklendi ({'OpenVINO' if self.ov_sil else 'PyTorch'}) "
                   f"siniflar: {list(self.model_sil.names.values())}")
@@ -4743,19 +4842,57 @@ class App:
         base = frame
         if self.yuz_bulanik.get():
             fh0, fw0 = frame.shape[:2]
-            kisiler, baslar = [], []
+            kisiler, baslar, siluet = [], [], None
+            if KISI_BULANIK and getattr(self, "model_seg", None) is not None:
+                try:
+                    rs = self.model_seg.predict(source=frame, classes=[0],
+                                                **self._pk(self.ov_seg, KISI_SEG_IMGSZ, KISI_SEG_CONF))[0]
+                    if rs.masks is not None and len(rs.masks):
+                        poz_kut = (kisi_kutulari(rp.boxes, fw0, fh0, pay=KISI_KIRP)
+                                   if rp is not None else [])
+                        koridor = kisi_koridor(rp.keypoints, fw0, fh0) if rp is not None else None
+                        siluet = np.zeros((fh0, fw0), np.uint8)
+                        kxy = rs.boxes.xyxy.cpu().numpy(); kcf = rs.boxes.conf.cpu().numpy()
+                        for poli, (sx1, sy1, sx2, sy2), cf in zip(rs.masks.xy, kxy, kcf):
+                            if len(poli) < 3:
+                                continue
+                            alan = max(1.0, (sx2 - sx1) * (sy2 - sy1))
+                            eslesen = None
+                            for px1, py1, px2, py2 in poz_kut:
+                                ort = (max(0.0, min(sx2, px2) - max(sx1, px1))
+                                       * max(0.0, min(sy2, py2) - max(sy1, py1))) / alan
+                                if ort >= KISI_ESLES:
+                                    eslesen = (px1, py1, px2, py2); break
+                            if poz_kut and eslesen is None:
+                                continue                    # poz kisi gormedi -> insan degil
+                            if not poz_kut and cf < KISI_SEG_TEK_CONF:
+                                continue
+                            tek = np.zeros_like(siluet)
+                            cv2.fillPoly(tek, [poli.astype(np.int32)], 255)
+                            if eslesen is not None:          # kisinin kutusu disina tasma
+                                px1, py1, px2, py2 = eslesen
+                                tek[:py1, :] = 0; tek[py2:, :] = 0; tek[:, :px1] = 0; tek[:, px2:] = 0
+                            if koridor is not None:
+                                tek &= koridor               # motor siluete karistiysa ayikla
+                            siluet |= tek
+                        if not siluet.any():
+                            siluet = None
+                except Exception as e:
+                    print("seg hata:", e)
             if rp is not None:
-                if KISI_BULANIK:
-                    kisiler = kisi_kutulari(rp.boxes, fw0, fh0)
-                baslar = bas_bolgeleri(rp.keypoints, fw0, fh0)   # bas kutudan tassa da kapanir
+                baslar = bas_bolgeleri(rp.keypoints, fw0, fh0)   # bas siluetten tassa da kapanir
+                if KISI_BULANIK and siluet is None:
+                    kisiler = kisi_kutulari(rp.boxes, fw0, fh0)  # yedek: siluet yoksa kutu
             son = getattr(self, "_maske_son", None)
-            if kisiler or baslar:
-                self._maske_son = (now_t, kisiler, baslar)
+            if kisiler or baslar or siluet is not None:
+                self._maske_son = (now_t, kisiler, baslar, siluet)
             elif son and (now_t - son[0]) <= YUZ_HATIRLA:
-                kisiler, baslar = son[1], son[2]      # kisa kayiplarda son konum
-            if kisiler or baslar:
+                kisiler, baslar, siluet = son[1], son[2], son[3]   # kisa kayiplarda son konum
+            if kisiler or baslar or siluet is not None:
                 base = frame.copy()
                 kab = int(self.yuz_kabalik.get())
+                if siluet is not None:
+                    base = kisi_siluet_bulanik(base, siluet, kab)
                 if kisiler:
                     base = kisi_bulanik(base, kisiler, kab)
                 if baslar:
