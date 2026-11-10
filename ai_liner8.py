@@ -385,6 +385,13 @@ YUZ_RY         = 0.38     # dikey yaricap  (bas ovaldir, biraz uzun)
 YUZ_ASAGI      = 0.06     # merkez goz hizasindan agiza dogru kaydirma
 YUZ_HATIRLA    = 1.0      # bas kaybolursa bu kadar sn daha bulaniklastir
 YUZ_MIN_R      = 18       # en kucuk yaricap (piksel)
+# v8: KISININ TAMAMI bulaniklastirilir (yalnizca yuz degil). Bulaniklik EN ALT
+# katmana uygulanir: kutular, etiketler ve iskelet bulanik goruntunun USTUNE
+# cizilir. Tespit modelleri yine ORIJINAL kareyi gorur (bellekte, diske yazilmaz).
+# False yaparsan eski davranis: yalnizca yuz mozaigi (yine en alt katmanda).
+KISI_BULANIK   = True
+KISI_PAY       = 0.06     # kisi kutusu her yandan bu oranda genisletilir
+KISI_KABALIK   = 1.6      # kabalik carpani (kisi bolgesi yuze gore buyuk)
 
 POSE_SKELETON = [
     (0,1),(0,2),(1,3),(2,4),(0,5),(0,6),(5,7),(7,9),(6,8),(8,10),
@@ -968,6 +975,51 @@ def yuz_mozaik(img, bolgeler, kabalik=None):
         maske = cv2.GaussianBlur(maske, (9, 9), 0)
         m3 = cv2.merge([maske, maske, maske]).astype(np.float32) / 255.0
         img[y1:y2, x1:x2] = (mozaik * m3 + roi * (1 - m3)).astype(np.uint8)
+    return img
+
+
+def kisi_kutulari(boxes, w, h, pay=None):
+    """Poz modelinin kisi kutularini (pay ile genisletilmis) piksel olarak dondurur."""
+    pay = KISI_PAY if pay is None else pay
+    kut = []
+    if boxes is None or len(boxes) == 0:
+        return kut
+    try:
+        xy = boxes.xyxy.cpu().numpy()
+    except Exception:
+        return kut
+    for x1, y1, x2, y2 in xy:
+        px, py = (x2 - x1) * pay, (y2 - y1) * pay
+        x1, y1 = max(0, int(x1 - px)), max(0, int(y1 - py))
+        x2, y2 = min(w, int(x2 + px)), min(h, int(y2 + py))
+        if x2 - x1 >= 4 and y2 - y1 >= 4:
+            kut.append((x1, y1, x2, y2))
+    return kut
+
+
+def kisi_bulanik(img, kutular, kabalik=None):
+    """Kisi kutularini guclu bulanik/mozaik ile kapatir (kenarlari yumusak)."""
+    if img is None or not kutular:
+        return img
+    blok = max(6, int((kabalik or YUZ_MOZAIK) * KISI_KABALIK))
+    h, w = img.shape[:2]
+    for kx1, ky1, kx2, ky2 in kutular:
+        # kutunun ICI tamamen bulanik; yumusak gecis kutunun DISINDA (kenar payi)
+        kenar = max(3, min(kx2 - kx1, ky2 - ky1) // 12)
+        x1, y1 = max(0, kx1 - kenar), max(0, ky1 - kenar)
+        x2, y2 = min(w, kx2 + kenar), min(h, ky2 + kenar)
+        bw, bh = x2 - x1, y2 - y1
+        if bw < 4 or bh < 4:
+            continue
+        roi = img[y1:y2, x1:x2]
+        kucuk = cv2.resize(roi, (max(1, bw // blok), max(1, bh // blok)), interpolation=cv2.INTER_AREA)
+        bulanik = cv2.resize(kucuk, (bw, bh), interpolation=cv2.INTER_LINEAR)
+        maske = np.zeros((bh, bw), np.uint8)
+        cv2.rectangle(maske, (kx1 - x1, ky1 - y1), (kx2 - x1, ky2 - y1), 255, -1)
+        maske = cv2.GaussianBlur(maske, (0, 0), kenar / 2.0)
+        cv2.rectangle(maske, (kx1 - x1, ky1 - y1), (kx2 - x1, ky2 - y1), 255, -1)   # ic tam
+        m3 = (maske.astype(np.float32) / 255.0)[..., None]
+        img[y1:y2, x1:x2] = (bulanik * m3 + roi * (1 - m3)).astype(np.uint8)
     return img
 
 
@@ -2134,7 +2186,7 @@ const AYARLAR = [
    ["frame_skip","Kare atlama",0,5,1,0],
    ["alpha","Maske saydamligi",0,1,0.05,2]]],
 ];
-const ANAHTARLAR = [["yuz_bulanik","Yuzleri gizle (KVKK)"],["show_pose","Iskelet"],
+const ANAHTARLAR = [["yuz_bulanik","Kisileri gizle (KVKK)"],["show_pose","Iskelet"],
   ["show_zones","Bolgeleri goster"],["show_motor_gate","Motor gostergesi"],
   ["rapor_va","Raporda VA/NVA ayrimi"]];
 
@@ -4234,7 +4286,7 @@ class App:
         for metin, degisken in (("Bu pencerede goruntu (kapatmak hizlandirir)",
                                  self.tk_video),
                                 ("Iskelet (pose)", self.show_pose),
-                                ("Yuzleri gizle (KVKK)", self.yuz_bulanik),
+                                ("Kisileri gizle (KVKK)", self.yuz_bulanik),
                                 ("Bolgeleri goster", self.show_zones),
                                 ("Motor cevrim gostergesi", self.show_motor_gate)):
             ttk.Checkbutton(g, text=metin, variable=degisken).pack(anchor="w")
@@ -4679,7 +4731,36 @@ class App:
     # ── hibrit cikarim ──────────────────────────────────────────────────
     def _infer_all(self, frame, conf_qa, per_conf, imgsz, alpha):
         now_t = time.time()
-        layer = frame.copy()
+
+        # ── KVKK: kisiler EN ALT katmanda bulaniklastirilir ──────────
+        # Poz modeli, iskelet gosterimi kapali olsa bile maskeleme icin calisir.
+        rp = None
+        if self.model_pose is not None and (self.show_pose.get() or self.yuz_bulanik.get()):
+            try:
+                rp = self.model_pose.predict(source=frame, **self._pk(self.ov_pose, imgsz, POSE_CONF))[0]
+            except Exception as e:
+                print("pose hata:", e)
+        base = frame
+        if self.yuz_bulanik.get():
+            fh0, fw0 = frame.shape[:2]
+            kisiler, baslar = [], []
+            if rp is not None:
+                if KISI_BULANIK:
+                    kisiler = kisi_kutulari(rp.boxes, fw0, fh0)
+                baslar = bas_bolgeleri(rp.keypoints, fw0, fh0)   # bas kutudan tassa da kapanir
+            son = getattr(self, "_maske_son", None)
+            if kisiler or baslar:
+                self._maske_son = (now_t, kisiler, baslar)
+            elif son and (now_t - son[0]) <= YUZ_HATIRLA:
+                kisiler, baslar = son[1], son[2]      # kisa kayiplarda son konum
+            if kisiler or baslar:
+                base = frame.copy()
+                kab = int(self.yuz_kabalik.get())
+                if kisiler:
+                    base = kisi_bulanik(base, kisiler, kab)
+                if baslar:
+                    base = yuz_mozaik(base, baslar, kab)
+        layer = base.copy()
         steps_seen = []; work_seen = []; n_qa = 0
         motor_cands = []      # [(alan, (cx, cy)), ...] — bu karedeki motor kutulari
         kep_boxes_norm = []   # [(cx, cy)] normalize — kep_sokme tespitleri
@@ -4751,25 +4832,18 @@ class App:
                 cv2.rectangle(layer, (x1m, ty - th - 4), (x1m + tw + 6, ty + bl), MOTOR_RENK, -1)
                 cv2.putText(layer, etk, (x1m + 3, ty), cv2.FONT_HERSHEY_SIMPLEX, fs,
                             (255, 255, 255), max(1, lw - 1), cv2.LINE_AA)
-        annotated = cv2.addWeighted(frame, 1-alpha, layer, alpha, 0) if alpha != 1.0 else layer
+        # NOT: saydam katman HAM kareyle degil, bulanik tabanla karistirilir
+        annotated = cv2.addWeighted(base, 1-alpha, layer, alpha, 0) if alpha != 1.0 else layer
 
         hand_points = []
         n_person = 0
-        if self.show_pose.get() and self.model_pose is not None:
-            rp = self.model_pose.predict(source=frame, **self._pk(self.ov_pose, imgsz, POSE_CONF))[0]
+        if rp is not None:
             n_person = len(rp.boxes) if rp.boxes is not None else 0
-            # KVKK: yuzleri iskelet cizilmeden once mozaikle
-            if self.yuz_bulanik.get():
-                fh2, fw2 = annotated.shape[:2]
-                bolgeler = bas_bolgeleri(rp.keypoints, fw2, fh2)
-                if bolgeler:
-                    self._yuz_son = (now_t, bolgeler)
-                elif self._yuz_son and (now_t - self._yuz_son[0]) <= YUZ_HATIRLA:
-                    bolgeler = self._yuz_son[1]      # kisa kayiplarda son konum
-                annotated = yuz_mozaik(annotated, bolgeler,
-                                       int(self.yuz_kabalik.get()))
-            annotated, wrists = draw_pose(annotated, rp.keypoints)
-            hand_points.extend(wrists)
+            if self.show_pose.get():
+                if not annotated.flags.writeable:
+                    annotated = annotated.copy()
+                annotated, wrists = draw_pose(annotated, rp.keypoints)   # bulanigin USTUNE
+                hand_points.extend(wrists)
 
         return (annotated, n_qa, steps_seen, work_seen, hand_points,
                 n_person, motor_cands, kep_boxes_norm)
