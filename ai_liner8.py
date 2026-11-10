@@ -119,7 +119,7 @@ KEP_SUPPORT_OGREN   = 0.30           # merkez guncelleme agirligi (0..1)
 # gore kalibrasyon.mp4'te olculdu (157 tespit, medyan).
 MUSUR_KONUM          = (0.408, 0.596)
 MUSUR_NESNE          = "müşür"
-MUSUR_NESNE_CONF     = 0.40
+MUSUR_NESNE_CONF     = 0.25
 MUSUR_NESNE_R        = 0.12   # musur tespiti bu noktaya bu kadar yakin olmali
 MUSUR_MIN_KARE       = 1      # v8: musur nesnesi kalibrasyonda YALNIZCA sikmadan sonra
                               # goruldu -> tek karede gormek yeterli (yanlis onay riski yok)
@@ -260,8 +260,8 @@ PER_CLASS_CONF = {
     "kep_sokme": 0.35,
     "pim cakma": 0.40,       # dusuk recall — daha kolay yakalansin
     "kam_mili koyma": 0.25,   # v8: canli kamerada kesik tespit icin 0.30 -> 0.25
-    "musur_skma": 0.35,      # v8: canlida kaciyordu 0.45 -> 0.35 (kayitta medyan 0.87)
-    "silikon_silme": 0.30,   # v8: kisa/aralikli goruluyor; erken yanlislari sira sarti engeller
+    "musur_skma": 0.30,      # sahada ayarlandi (0.45 -> 0.30)
+    "silikon_silme": 0.25,   # v8: kisa/aralikli goruluyor; erken yanlislari sira sarti engeller
     MOTOR_CLASS: MOTOR_CONF,
     KEP_SINIF: KEP_CONF,
     MUSUR_NESNE: MUSUR_NESNE_CONF,
