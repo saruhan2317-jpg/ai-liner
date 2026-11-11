@@ -330,7 +330,7 @@ ERTELENEBILIR = {"pim cakma", "musur_skma"}
 STEP_REQUIRES_ANY = {
     # v8: silikon silme SIRADAN BAGIMSIZ (pim ve musurden once ya da sonra
     # yapilabilir). Yanlis onaya karsi sure sarti var: ana model etiketi
-    # STEP_DWELL ile 0.25 sn, spatula SILIKON_MIN_SURE ile 0.5 sn.
+    # STEP_DWELL ile 0.25 sn, spatula SILIKON_MIN_KARE / SILIKON_PENCERE.
 }
 
 STEP_REQUIRES = {
