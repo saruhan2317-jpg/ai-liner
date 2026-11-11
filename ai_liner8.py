@@ -56,6 +56,17 @@ SILIKON_SINIFLAR   = {"spatula", "silikon_silme"}   # bu siniflardan biri motoru
 SILIKON_CONF       = 0.35
 SILIKON_PAY        = 0.05      # motor kutusu her yandan bu kadar genisletilir (normalize)
 SILIKON_RENK       = (0, 140, 255)   # turuncu (BGR)
+# v8: ISTEGE BAGLI musur modeli (2 sinif: takili musur + musur sikma). Dosya
+# YOKSA hicbir sey degismez. Varsa yalnizca motor postadayken ve musur adimlari
+# bitmemisken calisir; tespitleri ana modelinkilerle ayni konum kurallarindan
+# gecer (motor govdesi, sikmanin yeri, tani mesajlari).
+MUSUR_MODEL_PATH   = os.path.join(BASE_DIR, "musur_best.pt")
+MUSUR_MODEL_CONF   = 0.35
+MUSUR_MODEL_SINIF  = {                       # yeni modelin sinif adi -> AI-LINER adi
+    "musur": "müşür", "müşür": "müşür", "musur_takili": "müşür",
+    "musur_sikma": "musur_skma", "musur_skma": "musur_skma",
+}
+MUSUR_MODEL_RENK   = {"müşür": (60, 200, 120), "musur_skma": (255, 120, 40)}
 POSE_MODEL_PATH   = "yolov8n-pose.pt"                              # iskelet
 
 VIDEO_DIR = os.path.join(BASE_DIR, "videos")
@@ -3915,6 +3926,10 @@ class App:
         self.model_qa,     self.ov_qa     = self._load_yolo(QA_MODEL_PATH, "detect", required=True)
         self.model_pose,   self.ov_pose   = self._load_pose()
         self.model_sil,    self.ov_sil    = self._load_yolo(SILIKON_MODEL_PATH, "detect", required=False)
+        self.model_musur,  self.ov_musur  = self._load_yolo(MUSUR_MODEL_PATH, "detect", required=False)
+        if self.model_musur is not None:
+            print(f"[musur] musur modeli yuklendi ({'OpenVINO' if self.ov_musur else 'PyTorch'}) "
+                  f"siniflar: {list(self.model_musur.names.values())}")
         self.model_seg,    self.ov_seg    = (self._load_yolo(SEG_MODEL_PATH, "segment", required=False)
                                              if KISI_BULANIK else (None, False))
         print(f"[KVKK] maske: {'vucut silueti (segmentasyon)' if self.model_seg is not None else 'kisi kutusu'}"
@@ -4889,6 +4904,26 @@ class App:
                 frame, cur, drops = f2, cur+1, drops+1
         return frame, cap, vs
 
+    def _musur_model_tespit(self, frame, imgsz):
+        """Ayri musur modelinin tespitleri: [(ad, cx, cy, (x1,y1,x2,y2) normalize, conf, piksel_kutu)]."""
+        try:
+            r = self.model_musur.predict(source=frame, **self._pk(self.ov_musur, imgsz, MUSUR_MODEL_CONF))[0]
+        except Exception as e:
+            print("musur model hata:", e); return []
+        if r.boxes is None or not len(r.boxes):
+            return []
+        fh, fw = frame.shape[:2]
+        out = []
+        for box in r.boxes:
+            ad = MUSUR_MODEL_SINIF.get(self.model_musur.names[int(box.cls[0])])
+            if ad is None:
+                continue
+            x1, y1, x2, y2 = [float(v) for v in box.xyxy[0]]
+            out.append((ad, (x1 + x2) / 2 / fw, (y1 + y2) / 2 / fh,
+                        (x1 / fw, y1 / fh, x2 / fw, y2 / fh), float(box.conf[0]),
+                        (int(x1), int(y1), int(x2), int(y2))))
+        return out
+
     # ── hibrit cikarim ──────────────────────────────────────────────────
     def _infer_all(self, frame, conf_qa, per_conf, imgsz, alpha):
         now_t = time.time()
@@ -5204,6 +5239,24 @@ class App:
             steps_seen = [s for s in steps_seen if s != "kep_sokme"]
             if kep_tracker.qa_gecti_mi() and not qa.done.get("kep_sokme", False):
                 qa.mark("kep_sokme", "model")
+
+            # ── MUSUR (istege bagli ayri model) ───────────────────────
+            if (getattr(self, "model_musur", None) is not None and sayim_acik
+                    and not (qa.done.get(MUSUR_TAKILI_ADIM, False) and qa.done.get("musur_skma", False))):
+                ek = self._musur_model_tespit(frame, imgsz)
+                if ek:
+                    self._musur_boxes = list(getattr(self, "_musur_boxes", [])) + [
+                        (ad, cx, cy, k) for ad, cx, cy, k, _c, _p in ek]
+                    if any(e_[0] == "musur_skma" for e_ in ek) and "musur_skma" not in steps_seen:
+                        steps_seen.append("musur_skma")      # konum kontrolu asagida yapilir
+                    if not last_annotated.flags.writeable:
+                        last_annotated = last_annotated.copy()
+                    for ad, _cx, _cy, _k, cf, (x1, y1, x2, y2) in ek:
+                        renk = MUSUR_MODEL_RENK.get(ad, (200, 200, 200))
+                        cv2.rectangle(last_annotated, (x1, y1), (x2, y2), renk, 2, cv2.LINE_AA)
+                        cv2.putText(last_annotated, f"{'musur' if ad == MUSUR_NESNE else 'musur sikma'} {cf:.2f}",
+                                    (x1, max(14, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, renk, 2, cv2.LINE_AA)
+                    self.last_annotated = last_annotated
 
             mbox = kep_tracker.motor_box or motor_box
             musur_kutular = getattr(self, "_musur_boxes", [])
