@@ -56,6 +56,11 @@ SILIKON_SINIFLAR   = {"spatula", "silikon_silme"}   # bu siniflardan biri motoru
 SILIKON_CONF       = 0.35
 SILIKON_PAY        = 0.05      # motor kutusu her yandan bu kadar genisletilir (normalize)
 SILIKON_RENK       = (0, 140, 255)   # turuncu (BGR)
+# Spatula motora son SILIKON_PENCERE sn icinde en az SILIKON_MIN_KARE karede
+# degmeli. Kalibrasyonda kaza dokunuslari 3-4 sn'de en fazla 2 kare; gercek
+# silikon cok daha fazla. Sira serbest oldugu icin bu sart yanlis onayi onler.
+SILIKON_MIN_KARE   = 3
+SILIKON_PENCERE    = 3.0
 # v8: ISTEGE BAGLI musur modeli (2 sinif: takili musur + musur sikma). Dosya
 # YOKSA hicbir sey degismez. Varsa yalnizca motor postadayken ve musur adimlari
 # bitmemisken calisir; tespitleri ana modelinkilerle ayni konum kurallarindan
@@ -290,7 +295,7 @@ STEP_DWELL = {
     # ~5.4'unu onayladi; ikisinde de yanlis onay 0.
     "kam_mili koyma": 0.5,
     "musur_skma": 0.0,
-    "silikon_silme": 0.0,
+    "silikon_silme": 0.25,   # sira serbest: tek karelik yanlis tespit sayilmasin
 }
 STEP_GAP_TOL = 0.40   # bu kadar sn'lik kopukluk ayni gorulme sayilir
 # Adima ozel kopukluk toleransi: canli kamerada etiket gidip gelince onay
@@ -323,7 +328,9 @@ STEP_ZONE_GATE = {
 ERTELENEBILIR = {"pim cakma", "musur_skma"}
 
 STEP_REQUIRES_ANY = {
-    "silikon_silme": ["musur_skma", MUSUR_TAKILI_ADIM],
+    # v8: silikon silme SIRADAN BAGIMSIZ (pim ve musurden once ya da sonra
+    # yapilabilir). Yanlis onaya karsi sure sarti var: ana model etiketi
+    # STEP_DWELL ile 0.25 sn, spatula SILIKON_MIN_SURE ile 0.5 sn.
 }
 
 STEP_REQUIRES = {
@@ -5346,7 +5353,9 @@ class App:
             if (self.model_sil is not None and mbox is not None
                     and not qa.done.get("silikon_silme", False)
                     and (motor_mon.armed or gec_bekliyor)
-                    and any(qa.done.get(r, False) for r in STEP_REQUIRES_ANY.get("silikon_silme", ()))):
+                    and all(qa.done.get(r, False) for r in STEP_REQUIRES.get("silikon_silme", ()))
+                    and (not STEP_REQUIRES_ANY.get("silikon_silme")
+                         or any(qa.done.get(r, False) for r in STEP_REQUIRES_ANY["silikon_silme"]))):
                 try:
                     rs = self.model_sil.predict(source=frame, **self._pk(self.ov_sil, imgsz, SILIKON_CONF))[0]
                 except Exception as e:
@@ -5369,8 +5378,17 @@ class App:
                         cv2.rectangle(last_annotated, (int(x1), int(y1)), (int(x2), int(y2)), renk, 2, cv2.LINE_AA)
                         cv2.putText(last_annotated, f"{ad} {float(box.conf[0]):.2f}", (int(x1), max(14, int(y1) - 5)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, renk, 2, cv2.LINE_AA)
-                        if degiyor and "silikon_silme" not in steps_seen:
-                            steps_seen.append("silikon_silme")
+                        if degiyor:
+                            tem = getattr(self, "_sp_temas", None)
+                            if tem is None:
+                                tem = self._sp_temas = collections.deque()
+                            if not tem or tem[-1] != now:
+                                tem.append(now)
+                            while tem and now - tem[0] > SILIKON_PENCERE:
+                                tem.popleft()
+                            if len(tem) >= SILIKON_MIN_KARE and not qa.done.get("silikon_silme", False):
+                                qa.mark("silikon_silme", "model")   # sart kendi basina yeterli
+                                print(f"[SILIKON] spatula {len(tem)} karede motora degdi -> silikon silme")
                     self.last_annotated = last_annotated
 
             # ── yeni biten adimlar: kapi bolgelerini HEMEN sifirla ──────
