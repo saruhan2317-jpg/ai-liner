@@ -61,10 +61,18 @@ SILIKON_RENK       = (0, 140, 255)   # turuncu (BGR)
 # silikon cok daha fazla. Sira serbest oldugu icin bu sart yanlis onayi onler.
 SILIKON_MIN_KARE   = 3
 SILIKON_PENCERE    = 3.0
+# Ana modelin 'silikon_silme' etiketi, spatula o sirada MASADA (motora degmeden)
+# gorunuyorsa sayilmaz: spatula masadayken silikon silinemez. Kalibrasyonda
+# ana modelin yanlis silikon etiketlerinin hepsinde spatula masadaydi.
+SILIKON_MASA_RED   = True
+SILIKON_MASA_TUT   = 0.7       # son bu kadar sn'deki spatula konumuna bakilir
 # v8: ISTEGE BAGLI musur modeli (2 sinif: takili musur + musur sikma). Dosya
 # YOKSA hicbir sey degismez. Varsa yalnizca motor postadayken ve musur adimlari
 # bitmemisken calisir; tespitleri ana modelinkilerle ayni konum kurallarindan
 # gecer (motor govdesi, sikmanin yeri, tani mesajlari).
+# Takili musur gorulunce 'musur_skma' (sikma) da OK sayilir. Sikma sahada zor
+# yakalaniyor; takili musur ise guvenilir. False yaparsan sikma ayrica aranir.
+MUSUR_TAKILI_SIKMAYI_SAYAR = True
 MUSUR_MODEL_PATH   = os.path.join(BASE_DIR, "musur_best.pt")
 MUSUR_MODEL_CONF   = 0.35
 MUSUR_MODEL_SINIF  = {                       # yeni modelin sinif adi -> AI-LINER adi
@@ -240,6 +248,14 @@ MOTOR_ABSENT_CLOSES = False  # VARSAYILAN KAPALI: kaybolma tek basina kapatmaz
 MOTOR_LOST_SECS     = 12.0   # yukaridaki acikken, bu kadar surekli yoklukta kapat
 MOTOR_SNAP_GAP      = 0.50   # bu kadar yokluktan sonra yeniden gorulurse konum sifirdan alinir
 MOTOR_UNDO_SECS     = 1.50   # yanlis kapanma: motor bu sure icinde ayni yere donerse geri al
+# YENI MOTOR (kapanma kacirildiysa): kep sokme bitmis bir cevrimde silindir
+# kapaginda yine en az YENI_MOTOR_KEP_MIN kep YENI_MOTOR_SECS boyunca gorulurse
+# bu yeni bir motordur (yeni motor kepleri takili gelir). Motor operatorun
+# arkasinda cikinca ya da paletler arka arkaya gelince cikis kacabiliyor ve QA
+# sifirlanmiyordu; bu durumda cevrim kapatilir ve yeni cevrim baslar.
+YENI_MOTOR_KEP      = True
+YENI_MOTOR_KEP_MIN  = 5
+YENI_MOTOR_SECS     = 1.0
 MOTOR_UNDO_EMPTY_MAX = 0.80  # ...ve posta bu sureden uzun bos kalmamis olmali
                              # (bos kaldiysa parca gercekten gitmis, YENI parcadir)
 MOTOR_STATION_R_K   = 1.50   # yeni parca arama yaricapi = bu x kayma esigi (posta cevresi)
@@ -328,9 +344,9 @@ STEP_ZONE_GATE = {
 ERTELENEBILIR = {"pim cakma", "musur_skma"}
 
 STEP_REQUIRES_ANY = {
-    # v8: silikon silme SIRADAN BAGIMSIZ (pim ve musurden once ya da sonra
-    # yapilabilir). Yanlis onaya karsi sure sarti var: ana model etiketi
-    # STEP_DWELL ile 0.25 sn, spatula SILIKON_MIN_KARE / SILIKON_PENCERE.
+    # v8: silikon silme musurden BAGIMSIZ (once ya da sonra); pim cakmaya
+    # bagli (STEP_REQUIRES). Ek koruma: ana model etiketi STEP_DWELL 0.25 sn,
+    # spatula SILIKON_MIN_KARE / SILIKON_PENCERE, spatula masadaysa red.
 }
 
 STEP_REQUIRES = {
@@ -338,7 +354,9 @@ STEP_REQUIRES = {
     # musur sikma da eksik gorunuyordu (zincirleme hata). Musur blokta,
     # keplerden bagimsiz; yanlis tespiti konum kontrolu (motor alt govdesi) eler.
     "pim cakma":["kep_sokme"],
-
+    # silikon silme PIM CAKMADAN SONRA yapilir (musurden once/sonra serbest).
+    # Sira serbestken kepler dizilirken yanlis silikon onayi cikiyordu.
+    "silikon_silme":["pim cakma"],
 }
 
 # Kapi acildiktan sonra model etiketi hic gelmezse, bu kadar sn sonra
@@ -415,7 +433,8 @@ KISI_KABALIK   = 1.6      # kabalik carpani (kisi bolgesi yuze gore buyuk)
 # kalir. Model yoksa ya da kisiyi bulamazsa (poz modeli bulduysa) kutu bulanigi.
 SEG_MODEL_PATH = os.path.join(BASE_DIR, "yolov8n-seg.pt")
 KISI_SEG_CONF  = 0.25
-KISI_SEG_IMGSZ = 640
+KISI_SEG_IMGSZ = 480      # hiz icin (640 -> 480); siluet icin yeterli
+KISI_SEG_ARALIK = 2       # segmentasyon her N karede bir; aradaki karede son siluet
 KISI_GENISLET  = 0.012    # siluet her yandan kare genisliginin bu orani kadar buyutulur
 # Yanlis siluet (or. motorun 'insan' sanilmasi) elemesi: siluet, poz modelinin
 # buldugu bir kisinin kutusuyla en az KISI_ESLES orani kadar ortusmeli ve o
@@ -650,6 +669,12 @@ class MotorCycleMonitor:
             self.move_since = None
             self.move_hits = 0
         return None
+
+    def zorla_kapat(self, now):
+        """Disaridan (yeni motor isareti) kapat; 'geri dondu' sayilmasin."""
+        self._do_close(now)
+        self.prev_anchor = None
+        self.closed_at = None
 
     def _do_close(self, now):
         self.prev_anchor = self.anchor
@@ -4947,7 +4972,13 @@ class App:
         if self.yuz_bulanik.get():
             fh0, fw0 = frame.shape[:2]
             kisiler, baslar, siluet = [], [], None
-            if KISI_BULANIK and getattr(self, "model_seg", None) is not None:
+            self._seg_say = getattr(self, "_seg_say", -1) + 1
+            seg_sira = (self._seg_say % max(1, KISI_SEG_ARALIK) == 0)
+            son_m = getattr(self, "_maske_son", None)
+            if (KISI_BULANIK and not seg_sira and son_m is not None and son_m[3] is not None
+                    and now_t - son_m[0] <= YUZ_HATIRLA):
+                siluet = son_m[3]                 # aradaki kare: son siluet (hiz)
+            elif KISI_BULANIK and getattr(self, "model_seg", None) is not None:
                 try:
                     rs = self.model_seg.predict(source=frame, classes=[0],
                                                 **self._pk(self.ov_seg, KISI_SEG_IMGSZ, KISI_SEG_CONF))[0]
@@ -5106,6 +5137,7 @@ class App:
         musur_poz = None    # musurun bu cevrimde en son goruldugu ekran konumu
         musur_tani_t = 0.0  # son tani mesajinin zamani
         ertelenen = {}      # sirasi gelmeden gorulen adimlar {ad: zaman}
+        yeni_motor_t = None; zorla_kapat = False
         gec_bekliyor = False; gec_bitis = 0.0; gec_ok = gec_tot = 0
         son_kapanan_cyc = None
         pre_steps = {}      # cevrim oncesi yapilan adimlar {ad: zaman}
@@ -5246,6 +5278,17 @@ class App:
             steps_seen = [s for s in steps_seen if s != "kep_sokme"]
             if kep_tracker.qa_gecti_mi() and not qa.done.get("kep_sokme", False):
                 qa.mark("kep_sokme", "model")
+            # YENI MOTOR: kep sokme bitmisken kapakta yine kepler -> cikis kacirilmis
+            if (YENI_MOTOR_KEP and sayim_acik and qa.done.get("kep_sokme", False)
+                    and kep_tracker.motor_n >= YENI_MOTOR_KEP_MIN):
+                if yeni_motor_t is None:
+                    yeni_motor_t = now
+                elif now - yeni_motor_t >= YENI_MOTOR_SECS:
+                    print(f"[QA] kep sokme bitmisti ama kapakta yine {kep_tracker.motor_n} kep var "
+                          f"-> YENI MOTOR, onceki cevrim kapatiliyor")
+                    zorla_kapat = True; yeni_motor_t = None
+            else:
+                yeni_motor_t = None
 
             # ── MUSUR (istege bagli ayri model) ───────────────────────
             if (getattr(self, "model_musur", None) is not None and sayim_acik
@@ -5302,6 +5345,10 @@ class App:
             if sayim_acik and musur_gorulen >= MUSUR_MIN_KARE and not qa.done.get(MUSUR_TAKILI_ADIM, False):
                 qa.mark(MUSUR_TAKILI_ADIM, "model")
                 print(f"[MUSUR] musur goruldu ({musur_gorulen} kare) -> TAKILI")
+                if MUSUR_TAKILI_SIKMAYI_SAYAR and not qa.done.get("musur_skma", False):
+                    qa.mark("musur_skma", "takili")
+                    ertelenen.pop("musur_skma", None)
+                    print("[MUSUR] takili musur -> MUSUR SIKMA da OK")
 
             def _musur_sikma_yerinde():
                 """musur_skma kutusu: musur noktasini (harita ya da gercek konum)
@@ -5374,6 +5421,10 @@ class App:
                         kx1, ky1, kx2, ky2 = x1 / fw_, y1 / fh_, x2 / fw_, y2 / fh_
                         degiyor = (kx2 >= mx1 - p_ and kx1 <= mx2 + p_
                                    and ky2 >= my1 - p_ and ky1 <= my2 + p_)
+                        if degiyor:
+                            self._sp_deg_t = now
+                        else:
+                            self._sp_masa_t = now
                         renk = SILIKON_RENK if degiyor else (150, 150, 150)
                         cv2.rectangle(last_annotated, (int(x1), int(y1)), (int(x2), int(y2)), renk, 2, cv2.LINE_AA)
                         cv2.putText(last_annotated, f"{ad} {float(box.conf[0]):.2f}", (int(x1), max(14, int(y1) - 5)),
@@ -5390,6 +5441,17 @@ class App:
                                 qa.mark("silikon_silme", "model")   # sart kendi basina yeterli
                                 print(f"[SILIKON] spatula {len(tem)} karede motora degdi -> silikon silme")
                     self.last_annotated = last_annotated
+
+            # ana modelin silikon etiketi: spatula masadaysa (motora degmiyorsa) sayma
+            if (SILIKON_MASA_RED and "silikon_silme" in steps_seen
+                    and getattr(self, "model_sil", None) is not None):
+                masa_t = getattr(self, "_sp_masa_t", None); deg_t = getattr(self, "_sp_deg_t", None)
+                if (masa_t is not None and now - masa_t <= SILIKON_MASA_TUT
+                        and (deg_t is None or now - deg_t > SILIKON_MASA_TUT)):
+                    steps_seen = [x_ for x_ in steps_seen if x_ != "silikon_silme"]
+                    if now - getattr(self, "_sil_tani_t", 0.0) > 3.0:
+                        print("[SILIKON] silikon etiketi sayilmadi: spatula masada")
+                        self._sil_tani_t = now
 
             # ── yeni biten adimlar: kapi bolgelerini HEMEN sifirla ──────
             # (kilitler hesaplanmadan once yapilmali; aksi halde onkosul
@@ -5505,6 +5567,9 @@ class App:
                                          float(self.motor_hold.get()),
                                          bool(self.motor_absent_closes.get()),
                                          float(self.motor_lost.get()))
+            if zorla_kapat:
+                motor_mon.zorla_kapat(now)
+                motor_evt = "close"; zorla_kapat = False
 
             # ── URETIM SURESI BIRIKIMI (ISLEM / BOS) ────────────────────
             # Motorun yerlesmesi BEKLENMEZ: sayac onceki parca ciktigi anda
